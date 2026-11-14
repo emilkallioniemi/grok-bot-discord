@@ -1,0 +1,36 @@
+{
+  "name": "grok-bot-discord",
+  "version": "0.2.0",
+  "description": "Use Grok Bot in Discord. Give tasks to Grok Bot from Discord, and let Grok Bot read and answer in Discord. Not made by xAI.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "grok",
+    "grok-bot",
+    "xai",
+    "mcp",
+    "bun"
+  ],
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --compile --outfile dist/grok-bot"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "discord.js": "^14.28.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
