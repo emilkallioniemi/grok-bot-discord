@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createBridge } from "../src/application/bridge";
+import { createBridges } from "../src/application/bridges";
 import { openTaskStore } from "../src/adapters/sqlite-task-store";
 import { startMcpServer } from "../src/adapters/mcp-server";
 import { FakeDiscord, FakeRoutine } from "./support/fakes";
@@ -22,7 +23,7 @@ function setup() {
     newTaskId: () => "task-1",
     log: () => {},
   });
-  const server = startMcpServer({ bridge, token: TOKEN, port: 0 });
+  const server = startMcpServer({ bridges: createBridges({ default: bridge }), token: TOKEN, port: 0 });
   cleanups.push(() => server.stop());
   return { bridge, discord, url: server.url };
 }
@@ -100,6 +101,53 @@ describe("answer_task", () => {
   });
 });
 
+describe("files", () => {
+  test("answer_task attaches text files and binary files, so that long work goes in a file", async () => {
+    const { bridge, discord, url } = setup();
+    await bridge.giveTask(mention);
+    const client = await connect(url);
+
+    const result = await client.callTool({
+      name: "answer_task",
+      arguments: {
+        task_id: "task-1",
+        text: "Sign ready.",
+        files: [
+          { name: "sign.svg", content: "<svg/>" },
+          { name: "note.txt", content_base64: Buffer.from("hej").toString("base64") },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(discord.sent).toEqual([
+      {
+        channelId: "c1",
+        replyTo: "m1",
+        text: "Sign ready.",
+        files: [
+          { name: "sign.svg", text: "<svg/>" },
+          { name: "note.txt", text: "hej" },
+        ],
+      },
+    ]);
+  });
+
+  test("tells Grok Bot what is wrong when a file has no content or two contents", async () => {
+    const { url } = setup();
+    const client = await connect(url);
+
+    const none = await client.callTool({ name: "send_message", arguments: { channel_id: "c1", text: "x", files: [{ name: "a.svg" }] } });
+    const two = await client.callTool({
+      name: "send_message",
+      arguments: { channel_id: "c1", text: "x", files: [{ name: "a.svg", content: "<svg/>", content_base64: "PHN2Zy8+" }] },
+    });
+
+    expect(textOf(none)).toBe('The file "a.svg" must have content or content_base64, not both and not none.');
+    expect(textOf(two)).toBe('The file "a.svg" must have content or content_base64, not both and not none.');
+  });
+});
+
 describe("send_message", () => {
   test("sends a message to any channel, also as a reply, and returns the new message IDs", async () => {
     const { discord, url } = setup();
@@ -151,7 +199,7 @@ describe("add_reaction and list_channels", () => {
 
     const result = await client.callTool({ name: "list_channels", arguments: {} });
 
-    expect(JSON.parse(textOf(result))).toEqual([{ id: "c1", name: "general", server: "Team" }]);
+    expect(JSON.parse(textOf(result))).toEqual([{ id: "c1", name: "general", server: "Team", bots: ["default"] }]);
   });
 });
 
@@ -167,5 +215,116 @@ describe("Discord errors", () => {
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).toBe("Discord did not do the action: Missing Permissions");
+  });
+});
+
+describe("more than one Discord bot", () => {
+  function setupTwo() {
+    const discords = { pia: new FakeDiscord(), ditte: new FakeDiscord() };
+    const bridgeFor = (name: "pia" | "ditte") =>
+      createBridge({
+        discord: discords[name],
+        routine: new FakeRoutine(),
+        tasks: openTaskStore(":memory:", name),
+        clock: () => new Date(),
+        newTaskId: () => `${name}-task`,
+        log: () => {},
+      });
+    const bridges = { pia: bridgeFor("pia"), ditte: bridgeFor("ditte") };
+    const server = startMcpServer({
+      bridges: createBridges(bridges, { userIds: { pia: "pia-user", ditte: "ditte-user" } }),
+      token: TOKEN,
+      port: 0,
+    });
+    cleanups.push(() => server.stop());
+    return { discords, bridges, url: server.url };
+  }
+
+  test("each tool acts as the Discord bot that Grok Bot names", async () => {
+    const { discords, url } = setupTwo();
+    const client = await connect(url);
+
+    await client.callTool({ name: "send_message", arguments: { bot: "pia", channel_id: "c1", text: "From Pia" } });
+    await client.callTool({ name: "add_reaction", arguments: { bot: "ditte", channel_id: "c1", message_id: "m1", emoji: "✅" } });
+
+    expect(discords.pia.sent).toEqual([{ channelId: "c1", text: "From Pia" }]);
+    expect(discords.pia.reactions).toEqual([]);
+    expect(discords.ditte.sent).toEqual([]);
+    expect(discords.ditte.reactions).toEqual([{ channelId: "c1", messageId: "m1", emoji: "✅" }]);
+  });
+
+  test("Grok Bot sees the names of the Discord bots in the tools", async () => {
+    const { url } = setupTwo();
+    const client = await connect(url);
+
+    const { tools } = await client.listTools();
+    const send = tools.find((t) => t.name === "send_message")!;
+
+    expect((send.inputSchema.properties as Record<string, { description: string }>).bot!.description).toContain("pia, ditte");
+  });
+
+  test("a tool call without a bot does nothing, because the Bridge cannot know which bot must act", async () => {
+    const { discords, url } = setupTwo();
+    const client = await connect(url);
+
+    const result = await client.callTool({ name: "send_message", arguments: { channel_id: "c1", text: "Hi" } });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('Set "bot" to the name of a Discord bot: pia, ditte.');
+    expect(discords.pia.sent).toEqual([]);
+    expect(discords.ditte.sent).toEqual([]);
+  });
+
+  test("tells Grok Bot the correct names when a bot does not exist", async () => {
+    const { url } = setupTwo();
+    const client = await connect(url);
+
+    const result = await client.callTool({ name: "read_messages", arguments: { bot: "Pia", channel_id: "c1" } });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('There is no Discord bot with the name "Pia". The names are: pia, ditte.');
+  });
+
+  test("answer_task posts the Answer as the bot that received the Task, without a bot setting", async () => {
+    const { discords, bridges, url } = setupTwo();
+    await bridges.ditte.giveTask(mention);
+    const client = await connect(url);
+
+    const result = await client.callTool({ name: "answer_task", arguments: { task_id: "ditte-task", text: "Done." } });
+
+    expect(result.isError).toBeFalsy();
+    expect(discords.ditte.sent).toEqual([{ channelId: "c1", replyTo: "m1", text: "Done." }]);
+    expect(discords.pia.sent).toEqual([]);
+  });
+
+  test("answer_task and send_message can mention a different bot, so that the bots can give each other tasks", async () => {
+    const { discords, bridges, url } = setupTwo();
+    await bridges.ditte.giveTask(mention);
+    const client = await connect(url);
+
+    await client.callTool({ name: "answer_task", arguments: { task_id: "ditte-task", text: "what is next?", mention: ["pia"] } });
+    await client.callTool({ name: "send_message", arguments: { bot: "pia", channel_id: "c1", text: "a logo?", mention: ["ditte"] } });
+
+    expect(discords.ditte.sent).toEqual([
+      { channelId: "c1", replyTo: "m1", text: "<@pia-user> what is next?", mentions: ["pia-user"] },
+    ]);
+    expect(discords.pia.sent).toEqual([{ channelId: "c1", text: "<@ditte-user> a logo?", mentions: ["ditte-user"] }]);
+  });
+
+  test("list_channels shows which bots can see each channel", async () => {
+    const { discords, url } = setupTwo();
+    discords.pia.channels = [
+      { id: "c1", name: "general", guildName: "Team" },
+      { id: "c2", name: "support", guildName: "Team" },
+    ];
+    discords.ditte.channels = [{ id: "c1", name: "general", guildName: "Team" }];
+    const client = await connect(url);
+
+    const result = await client.callTool({ name: "list_channels", arguments: {} });
+
+    expect(JSON.parse(textOf(result))).toEqual([
+      { id: "c1", name: "general", server: "Team", bots: ["pia", "ditte"] },
+      { id: "c2", name: "support", server: "Team", bots: ["pia"] },
+    ]);
   });
 });

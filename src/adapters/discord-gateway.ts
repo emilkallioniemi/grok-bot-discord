@@ -2,8 +2,8 @@ import { ChannelType, PermissionFlagsBits, type Client, type Message } from "dis
 import type { ChannelSummary, DiscordGateway, DiscordMessage } from "../application/ports";
 import { splitMessage } from "../split";
 
-/** Text from Grok Bot must not mention @everyone, roles, or users. */
-const NO_MENTIONS = { parse: [] as never[], repliedUser: true };
+/** Text from Grok Bot must not mention @everyone, roles, or users. Only the users in mentionUserIds get a ping. */
+const allowedMentions = (users: string[] = []) => ({ parse: [] as never[], users, repliedUser: true });
 
 /** Does the actions of the Discord tools with discord.js, as the Bridge user. */
 export function createDiscordGateway(client: Client<true>): DiscordGateway {
@@ -19,9 +19,19 @@ export function createDiscordGateway(client: Client<true>): DiscordGateway {
     async sendMessage(channelId, text, options) {
       const channel = await textChannel(channelId);
       const messageIds: string[] = [];
-      for (const [index, part] of splitMessage(text).entries()) {
+      // A message with only files has no text part.
+      const parts = text.trim() ? splitMessage(text) : [""];
+      const files = (options?.files ?? []).map((f) => ({ attachment: Buffer.from(f.data), name: f.name }));
+      for (const [index, part] of parts.entries()) {
         const reply = index === 0 && options?.replyTo ? { messageReference: options.replyTo, failIfNotExists: false } : undefined;
-        const sent = await channel.send({ content: part, allowedMentions: NO_MENTIONS, ...(reply ? { reply } : {}) });
+        const last = index === parts.length - 1;
+        const sent = await channel.send({
+          ...(part ? { content: part } : {}),
+          allowedMentions: allowedMentions(options?.mentionUserIds),
+          ...(reply ? { reply } : {}),
+          // The files come with the last part, after the text.
+          ...(last && files.length > 0 ? { files } : {}),
+        });
         messageIds.push(sent.id);
       }
       return { messageIds };
@@ -32,6 +42,21 @@ export function createDiscordGateway(client: Client<true>): DiscordGateway {
       const messages = await channel.messages.fetch({ limit, ...(before ? { before } : {}) });
       // Discord gives the newest message first.
       return [...messages.values()].reverse().map(toDiscordMessage);
+    },
+
+    async readReplyChain(channelId, messageId, limit) {
+      const channel = await textChannel(channelId);
+      const chain: Message[] = [];
+      let current = await channel.messages.fetch(messageId);
+      while (chain.length < limit && current.reference?.messageId) {
+        try {
+          current = await current.fetchReference();
+        } catch {
+          break; // Somebody deleted the earlier message.
+        }
+        chain.push(current);
+      }
+      return chain.reverse().map(toDiscordMessage);
     },
 
     async addReaction(channelId, messageId, emoji) {

@@ -1,0 +1,14 @@
+{
+  "pia": {
+    "DISCORD_TOKEN": "",
+    "GROK_BOT_ROUTINE_URL": "",
+    "GROK_BOT_ROUTINE_KEY": "",
+    "ROLE": "Product owner: priorities, hypotheses, next steps, and decisions. Does not design and does not write code."
+  },
+  "ditte": {
+    "DISCORD_TOKEN": "",
+    "GROK_BOT_ROUTINE_URL": "",
+    "GROK_BOT_ROUTINE_KEY": "",
+    "ROLE": "Design lead: brand, logo, colors, fonts, UI/UX, flows, wireframes, and style guides. Does not make product decisions."
+  }
+}

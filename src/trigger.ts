@@ -1,6 +1,8 @@
 export interface IncomingMessage {
   content: string;
   authorIsBot: boolean;
+  /** The author is a different bot of this Bridge. */
+  authorIsColleague: boolean;
   isDM: boolean;
   mentionsBot: boolean;
 }
@@ -12,7 +14,8 @@ export interface IncomingMessage {
  * An empty string means that the message contains only a mention of the bot.
  */
 export function extractPrompt(message: IncomingMessage, botId: string): string | null {
-  if (message.authorIsBot) return null;
+  if (message.authorIsBot && !message.authorIsColleague) return null;
+  if (message.authorIsBot && message.isDM) return null;
   if (!message.isDM && !message.mentionsBot) return null;
   return message.content
     .replaceAll(`<@${botId}>`, "")

@@ -36,11 +36,15 @@ Grok Bot has no Discord integration and no API to send it messages. This project
 
 | Tool | What Grok Bot can do |
 | --- | --- |
-| `answer_task` | Post the Answer to a task, as a reply to the message that gave the task |
-| `send_message` | Send a message to a channel, also as a reply to a message |
+| `answer_task` | Post the Answer to a task, as a reply to the message that gave the task, also with files |
+| `send_message` | Send a message to a channel, also as a reply to a message, and also with files |
 | `read_messages` | Read the last messages of a channel (a maximum of 100 in one call) |
 | `add_reaction` | Add an emoji reaction to a message |
 | `list_channels` | List the text channels that the Bridge bot can see |
+
+With more than one Discord bot, each tool except `answer_task` has a `bot` setting, and `answer_task` and `send_message` have a `mention` setting to give tasks to a different bot. See [More than one Grok Bot](#more-than-one-grok-bot).
+
+`answer_task` and `send_message` can attach files: a maximum of 10 files, and 10 MB together. Grok Bot sends text files, for example SVG, Markdown, or code, as `content`, and binary files, for example PDF or PNG, as `content_base64`. Each task tells Grok Bot to put long work in a file and to write one short line about it, as a person does in Discord.
 
 The Bridge does not let messages from Grok Bot mention @everyone, roles, or users. If a message has more than 2,000 characters, the Bridge divides it into more than one Discord message.
 
@@ -83,7 +87,25 @@ In `.env`, write `DISCORD_TOKEN`. For `MCP_TOKEN`, write a long random value. Th
 openssl rand -hex 32
 ```
 
-You write the routine values in step 4.
+Then start the Bridge:
+
+```bash
+bun start
+```
+
+The Bridge starts without the routine values. You write them in step 4. Until then, the Bridge tells members who give a task that the routine is not set up.
+
+Grok Bot must connect to the Bridge through a public HTTPS URL. On a server, use a reverse proxy with HTTPS. On your computer, use a tunnel. For example, start one of these tunnels in a second terminal:
+
+```bash
+bunx localtunnel --port 3000
+```
+
+```bash
+cloudflared tunnel --url http://localhost:3000
+```
+
+The tunnel shows a public URL. If you restart the tunnel, the URL can change. Then you must change the URL of the connector in Grok Bot too.
 
 ### 3. Add the Discord tools to Grok Bot
 
@@ -92,6 +114,7 @@ In Grok Bot, add a custom connector:
 - **Type:** Remote HTTPS
 - **Server URL:** the public URL of the Bridge, with the path `/mcp`. For example: `https://bridge.example.com/mcp`
 - **HTTP header:** `Authorization` with the value `Bearer <your MCP_TOKEN>`
+- **Only for localtunnel:** the HTTP header `bypass-tunnel-reminder` with the value `true`. Without this header, localtunnel can show a warning page to Grok Bot.
 
 ### 4. Create the routine
 
@@ -99,11 +122,7 @@ In Grok Bot, create a routine and add a webhook trigger to it. Use an instructio
 
 > You receive tasks from Discord as JSON. Do the work in the `text` field. If more information is necessary, read the conversation with `read_messages` in the channel of the task. When the work is complete, post the result with `answer_task` and the `task_id`. If you cannot do the task, tell the person with `answer_task`.
 
-Copy the **POST to** URL into `GROK_BOT_ROUTINE_URL`, and the **key** into `GROK_BOT_ROUTINE_KEY`. Then start the Bridge:
-
-```bash
-bun start
-```
+Copy the **POST to** URL into `GROK_BOT_ROUTINE_URL`, and the **key** into `GROK_BOT_ROUTINE_KEY`. Then stop the Bridge and start it again. Do not stop the tunnel.
 
 When the Bridge starts, it shows `Connected to Discord as <bot name>` and the URL of the Discord tools.
 
@@ -113,29 +132,82 @@ In Discord, mention the bot with a small task, for example `@Grok Bot what is in
 
 If Grok Bot asks for approval before it uses a tool, the Answer waits until you approve it in Grok Bot.
 
+## More than one Grok Bot
+
+You can connect more than one Grok Bot to Discord, for example one Grok Bot for support and one for operations. Each Grok Bot gets its own Discord bot, so members see which Grok Bot they give a task to. One Bridge process, one port, one tunnel, and one connector are sufficient for all of them (see [ADR 0003](docs/adr/0003-more-than-one-bridge-in-one-process.md)).
+
+1. For each Grok Bot, do step 1 again: create one more Discord application and add its bot to your server.
+2. Copy `bridges.example.json` to `bridges.json`. For each Discord bot, write a name and its `DISCORD_TOKEN`. The name must have only lowercase letters, digits, and `-`. Also write a `ROLE`: what the bot does, and what it does not do. Each Grok Bot sees the roles of all bots with each task. Thus, a Grok Bot gives a task only to the correct bot, and refuses a task that is not in its role.
+3. In `.env`, set `BRIDGES_FILE=bridges.json`. Remove `DISCORD_TOKEN`, `GROK_BOT_ROUTINE_URL`, and `GROK_BOT_ROUTINE_KEY` from `.env`. Keep `MCP_TOKEN`.
+4. Start the Bridge. Add the connector to Grok Bot one time (step 3). All Grok Bots of your account can use it.
+5. For each Grok Bot, create a routine (step 4). In the instruction, write which bot it is, for example: "You are Ditte. For the Discord tools, set `bot` to `ditte`." Copy the URL and the key of the routine into the entry of that bot in `bridges.json`. Then start the Bridge again.
+
+Each Discord tool has a `bot` setting. With more than one bot, a tool call without `bot` does nothing. `answer_task` does not need `bot`: the Answer always comes from the bot that received the task. The Bridge also tells each routine the name of its bot in each task.
+
+In Grok Bot, all Grok Bots of an account can use all connectors. Thus, each Grok Bot can act as each bot of the Bridge. The routine instruction, not a token, decides which bot a Grok Bot acts as.
+
+### Tasks between bots
+
+The bots talk to each other in Discord as persons do. For example, Ditte works on a task and must ask Pia a question:
+
+1. Ditte answers with a mention of Pia. Ditte can write `@Pia` in the text, as a person does, or use `mention: ["pia"]`. The Bridge changes `@name` of each bot of this Bridge into a real Discord mention. The name of the Bridge and the Discord name of the bot both work, in each case.
+2. Pia receives a task from Ditte. Pia answers as a reply to Ditte.
+3. Ditte receives the answer as a task, because it is a reply to her message. Ditte can continue her work, ask more, say thank you, or add a 👍 reaction.
+
+Each task tells the Grok Bot that Discord is a chat: short and casual messages, without greetings or sign-offs. With more than one bot, each task also contains the `team`: each bot and its `ROLE`.
+
+Each Grok Bot decides if the conversation continues. A reaction gives no task, so a reaction is a good way to end a conversation. Each task contains the conversation before it: the chain of replies, a maximum of 10 messages.
+
+To prevent loops, these rules apply (see [ADR 0004](docs/adr/0004-bots-of-the-bridge-give-each-other-tasks.md)):
+
+- A reply continues a conversation. `answer_task` always makes a reply. A message from a bot that is not a reply starts a new conversation, for example a message from a routine on a schedule.
+- After `MAX_BOT_STEPS` tasks between bots in one conversation (10 if you do not set it), the bot refuses the next task. Then a person must give a task. Replies to earlier messages of the conversation count too.
+- All bots together can start a maximum of `MAX_BOT_CONVERSATIONS_PER_HOUR` conversations in one hour (10 if you do not set it). Then the bot refuses until the hour is complete.
+- Only the bots of this Bridge can give tasks. The Bridge ignores other bots.
+- `mention` can only ping bots of this Bridge, never persons or roles.
+
+Each task between bots uses a routine run of your Grok Bot plan. In each routine instruction, you can tell the Grok Bot how to end a conversation, for example: "When a bot thanks you, add a 👍 reaction and do not answer."
+
+### Messages to the whole team
+
+You do not have to know which bot to mention. In the channels that you select, a router reads each message from a person that mentions no bot, for example "We change the brand color from red to blue". The router decides which bots the message concerns, from the `ROLE` of each bot, and sends the message to them. The Grok Bot of each bot then decides if it acts. A Grok Bot that acts adds 👀 to the message. The others do nothing.
+
+The router is the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions) (see [ADR 0005](docs/adr/0005-a-router-sends-messages-without-a-mention-to-the-correct-bots.md)). To use it, set `OPENAI_API_KEY` and `ROUTER_CHANNELS` in `.env`. Start with one channel, for example `ROUTER_CHANNELS=team`, and look at the decisions before you add more channels.
+
+The router can be wrong. A mention always goes to the bot.
+
+`.gitignore` contains `bridges.json`, because the file contains tokens. With Docker, mount the file into the container, for example `-v ./bridges.json:/app/bridges.json:ro`.
+
 ## Configuration
 
 The settings are environment variables. Bun reads them from the `.env` file automatically.
 
 | Variable | Necessary | Default value | Description |
 | --- | --- | --- | --- |
-| `DISCORD_TOKEN` | Yes | | The token of your Discord bot |
-| `GROK_BOT_ROUTINE_URL` | Yes | | The **POST to** URL of the webhook trigger of the routine |
-| `GROK_BOT_ROUTINE_KEY` | Yes | | The **key** of the webhook trigger |
+| `DISCORD_TOKEN` | Yes, if `BRIDGES_FILE` is not set | | The token of your Discord bot |
+| `GROK_BOT_ROUTINE_URL` | No | | The **POST to** URL of the webhook trigger of the routine. Members can give tasks only when you set this value and `GROK_BOT_ROUTINE_KEY`. |
+| `GROK_BOT_ROUTINE_KEY` | No | | The **key** of the webhook trigger. Set it together with `GROK_BOT_ROUTINE_URL`. |
 | `MCP_TOKEN` | Yes | | The bearer token that Grok Bot sends to the MCP server. It must have 20 characters or more. |
 | `MCP_PORT` | No | `3000` | The port of the MCP server |
 | `MCP_HOST` | No | `0.0.0.0` | The network address of the MCP server |
+| `BRIDGES_FILE` | No | | The path of a JSON file with the Discord token and the routine of each bot. See [More than one Grok Bot](#more-than-one-grok-bot). If you set it, do not set `DISCORD_TOKEN` or the routine settings in `.env`. |
+| `MAX_BOT_STEPS` | No | `10` | The maximum number of tasks that bots can give each other in one conversation. `0` means that bots cannot give each other tasks. |
+| `MAX_BOT_CONVERSATIONS_PER_HOUR` | No | `10` | The maximum number of conversations that bots can start in one hour, all bots together. `0` means that only persons can start conversations. |
+| `OPENAI_API_KEY` | No | | The API key for the router. Set it together with `ROUTER_CHANNELS`. |
+| `ROUTER_CHANNELS` | No | | The names or IDs of the channels where the router reads messages, separated by commas. `*` means all channels. |
+| `ROUTER_THRESHOLD` | No | `0.6` | The minimum probability, from 0 to 1, for a bot to receive a message from the router. |
 | `DATABASE_PATH` | No | `data/tasks.sqlite` | The SQLite file that keeps the tasks. Thus, Grok Bot can answer a task after the Bridge starts again. |
 
 ## Limits
 
-- Grok Bot runs each routine a maximum of 200 times in an hour, and all routines together a maximum of 300 times in an hour.
+- Grok Bot runs each routine a maximum of 200 times in an hour, and all routines together a maximum of 300 times in an hour. If more than one Grok Bot uses the same Grok Bot account, the limit of 300 is for all of them together.
 - Each task uses your Grok Bot plan.
 - Each member who can see the bot can give tasks.
+- Bots can give each other a maximum of `MAX_BOT_STEPS` tasks in one conversation (10 if you do not set it).
 
 ## Security
 
-- **Keep `MCP_TOKEN` secret.** A person with this token can read and send messages in Discord as the bot.
+- **Keep `MCP_TOKEN` secret.** A person with this token can read and send messages in Discord as each bot of the Bridge.
 - **Grok Bot can act in all channels that the bot can see.** Text that Grok Bot reads can try to make it do something bad. Use Discord permissions to limit the channels of the bot.
 - **Use HTTPS.** Put the MCP server behind HTTPS, for example with a reverse proxy or a tunnel.
 
@@ -147,6 +219,8 @@ The Bridge sends this data to Grok Bot for each task:
 - The name and Discord ID of the person who gave the task
 - The ID and name of the channel
 
+If you use the router, the Bridge also sends the text, the author name, and the channel name of each message in the router channels to OpenAI.
+
 Grok Bot can also read the messages of each channel that the bot can see. The Bridge keeps the tasks in its SQLite file. If you add the bot to a server, tell the members of the server about Grok Bot.
 
 ## Deployment
@@ -154,8 +228,8 @@ Grok Bot can also read the messages of each channel that the bot can see. The Br
 **One executable file.** Bun is not necessary on the computer that operates the Bridge.
 
 ```bash
-bun run build          # This command creates dist/grok-bot.
-./dist/grok-bot        # The Bridge reads .env from the current directory.
+bun run build              # This command creates dist/grok-bot-discord.
+./dist/grok-bot-discord    # The Bridge reads .env from the current directory.
 ```
 
 **Docker:**
@@ -178,7 +252,8 @@ The project contains these files:
 ```text
 src/
   domain/task.ts                 The Task
-  application/bridge.ts          The use cases: give a task, answer a task, and the Discord tools
+  application/bridge.ts          The use cases of one bot: give a task, answer a task, and the Discord tools
+  application/bridges.ts         All bots behind one set of Discord tools
   application/ports.ts           The interfaces to Discord, Grok Bot, and the task store
   adapters/routine-webhook.ts    Sends tasks to the Grok Bot routine
   adapters/mcp-server.ts         Gives the Discord tools to Grok Bot (MCP over HTTP)
